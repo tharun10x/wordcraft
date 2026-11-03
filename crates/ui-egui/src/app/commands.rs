@@ -388,6 +388,13 @@ impl WordApp {
             self.canvas.scroll_to_caret = false;
         } else if !file_keeps_view && !["ui.", "view.", "document.", "format.state", "draw."].iter().any(|p| id.starts_with(p)) {
             self.canvas.scroll_to_caret = true;
+            if self.session.view.is_continuous() {
+                self.canvas.page_move = match id {
+                    "caret.pageUp" => Some(-1.0),
+                    "caret.pageDown" => Some(1.0),
+                    _ => None,
+                };
+            }
         }
         for req in std::mem::take(&mut self.session.ui_requests) {
             self.handle_request(&req);

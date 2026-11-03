@@ -9315,6 +9315,130 @@ fn outline_show_level_filters_paragraphs() {
     assert!(s.run("outline.showLevel1", &json!({})).is_err());
 }
 
+/// 400 short paragraphs in a view, with the caret at the start.
+fn long_doc_in(view: &str) -> Session {
+    let mut s = s();
+    let text: Vec<String> = (0..400).map(|i| format!("Paragraph number {i}.")).collect();
+    run(&mut s, "document.setText", json!({"text": text.join("\n")}));
+    run(&mut s, view, json!({}));
+    s.sel = crate::Selection::caret(Pos::body(0, 0));
+    s
+}
+
+fn caret_top(s: &mut Session) -> f32 {
+    let (l, focus, hint) = (s.layout(), s.sel.focus.clone(), s.page_hint);
+    l.caret_on(&focus, hint).unwrap().top
+}
+
+/// #5290: Page Up/Down did nothing in the views with no pages. They move one window's height.
+#[test]
+fn page_keys_move_a_window_height_in_continuous_views() {
+    for view in ["view.outline", "view.draft", "view.webLayout"] {
+        let mut s = long_doc_in(view);
+        s.view.page_step = 300.0;
+        let top = caret_top(&mut s);
+        run(&mut s, "caret.pageDown", json!({}));
+        let moved = caret_top(&mut s) - top;
+        assert!((moved - 300.0).abs() < 30.0, "{view}: Page Down moved {moved} pt");
+        run(&mut s, "caret.pageUp", json!({}));
+        assert_eq!(s.sel.focus, Pos::body(0, 0), "{view}: Page Up comes back");
+    }
+}
+
+#[test]
+fn page_keys_still_turn_pages_in_print_layout() {
+    let mut s = long_doc_in("view.printLayout");
+    s.view.page_step = 300.0;
+    run(&mut s, "caret.pageDown", json!({}));
+    let (l, focus) = (s.layout(), s.sel.focus.clone());
+    assert_eq!(l.caret_on(&focus, 1).unwrap().page, 1);
+}
+
+/// They get to both ends of the document and stop there.
+#[test]
+fn page_keys_reach_the_ends_of_a_continuous_view() {
+    let mut s = long_doc_in("view.outline");
+    let (start, end) = (s.doc.start_of(StoryRef::Body), s.doc.end_of(StoryRef::Body));
+    for _ in 0..100 {
+        run(&mut s, "caret.pageDown", json!({}));
+    }
+    assert_eq!(s.sel.focus, end);
+    for _ in 0..100 {
+        run(&mut s, "caret.pageUp", json!({}));
+    }
+    assert_eq!(s.sel.focus, start);
+}
+
+#[test]
+fn shift_page_keys_extend_the_selection_in_a_continuous_view() {
+    let mut s = long_doc_in("view.draft");
+    run(&mut s, "caret.pageDown", json!({"extend": true}));
+    assert_eq!(s.sel.anchor, Pos::body(0, 0));
+    assert!(s.sel.focus > s.sel.anchor);
+}
+
+/// A short line on the way doesn't lose the caret's column.
+#[test]
+fn page_keys_keep_the_column_across_short_lines() {
+    let mut s = s();
+    let mut text = vec!["A first line with plenty of text in it.".to_string()];
+    text.extend((0..60).map(|_| "x".to_string()));
+    run(&mut s, "document.setText", json!({"text": text.join("\n")}));
+    run(&mut s, "view.draft", json!({}));
+    s.view.page_step = 200.0;
+    let at = Pos::body(0, 30);
+    s.sel = crate::Selection::caret(at.clone());
+    run(&mut s, "caret.pageDown", json!({}));
+    assert_eq!(s.sel.focus.off, 1, "the end of a short line");
+    run(&mut s, "caret.pageUp", json!({}));
+    assert_eq!(s.sel.focus, at);
+}
+
+/// The caret only lands on what the outline shows.
+#[test]
+fn page_keys_skip_what_the_outline_hides() {
+    let mut s = long_doc_in("view.outline");
+    for i in (0..400).step_by(10) {
+        s.sel = crate::Selection::caret(Pos::body(i, 0));
+        run(&mut s, "para.style", json!({"style": "Heading1"}));
+    }
+    s.view.page_step = 144.0;
+    s.sel = crate::Selection::caret(Pos::body(0, 0));
+    run(&mut s, "outline.showLevel1", json!({}));
+    for _ in 0..5 {
+        run(&mut s, "caret.pageDown", json!({}));
+        assert_eq!(s.sel.focus.path.0[0] % 10, 0, "at {:?}", s.sel.focus);
+    }
+    assert!(s.sel.focus.path.0[0] > 0);
+    run(&mut s, "outline.showAll", json!({}));
+    s.sel = crate::Selection::caret(Pos::body(0, 0));
+    run(&mut s, "outline.collapse", json!({}));
+    run(&mut s, "caret.pageDown", json!({}));
+    let block = s.sel.focus.path.0[0];
+    assert!(block >= 10, "past the collapsed heading's paragraphs: {block}");
+}
+
+/// A line taller than the step, or a step that makes no sense, still moves the caret and never
+/// panics.
+#[test]
+fn page_keys_always_make_progress_in_a_continuous_view() {
+    for step in [1.0, 0.0, -5.0, f32::NAN, f32::INFINITY, f32::NEG_INFINITY, f32::MAX] {
+        let mut s = s();
+        run(&mut s, "document.setText", json!({"text": "One\nTwo\nThree\nFour"}));
+        run(&mut s, "select.all", json!({}));
+        run(&mut s, "format.size", json!({"size": 400}));
+        run(&mut s, "view.draft", json!({}));
+        s.sel = crate::Selection::caret(Pos::body(0, 0));
+        s.view.page_step = step;
+        run(&mut s, "caret.pageDown", json!({}));
+        assert!(s.sel.focus > Pos::body(0, 0), "step {step}: the caret moved");
+        for _ in 0..8 {
+            run(&mut s, "caret.pageDown", json!({}));
+        }
+        assert_eq!(s.sel.focus, s.doc.end_of(StoryRef::Body), "step {step}");
+    }
+}
+
 #[test]
 fn outline_collapse_hides_descendants_and_expand_restores() {
     let mut s = outline_doc();

@@ -1368,6 +1368,51 @@ fn reading_mode_keys_turn_columns() {
     assert!(!a.session.view.read_mode, "Escape leaves Read Mode");
 }
 
+/// #5290: in a view with no pages the keys move the caret and the view by one window's height,
+/// so the caret keeps its place in the window.
+#[test]
+fn page_keys_scroll_a_window_in_continuous_views() {
+    for view in ["view.outline", "view.draft", "view.webLayout"] {
+        let mut a = app();
+        let text: Vec<String> = (0..600).map(|i| format!("Paragraph number {i}.")).collect();
+        a.run("document.setText", json!({"text": text.join("\n")})).unwrap();
+        a.run("caret.set", json!({"pos": wordcraft_doc::Pos::body(0, 0)})).unwrap();
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1280.0, 740.0));
+        let mut d = FrameDriver { ctx: egui::Context::default(), t: 0.0 };
+        let settle = |d: &mut FrameDriver, a: &mut WordApp| {
+            for _ in 0..40 {
+                d.frame(a, vec![], screen);
+            }
+        };
+        a.run(view, json!({})).unwrap();
+        settle(&mut d, &mut a);
+        assert!(a.canvas.focused, "{view}: the canvas has the keyboard");
+        let key = |key| egui::Event::Key { key, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE };
+        let window = a.canvas.viewport.unwrap().height();
+        let before = a.canvas.scroll_offset.y;
+        d.frame(&mut a, vec![key(egui::Key::PageDown)], screen);
+        settle(&mut d, &mut a);
+        let once = a.canvas.scroll_offset.y;
+        assert!((once - before - window).abs() < 2.0, "{view}: Page Down scrolled {} of {window}", once - before);
+        assert!(a.session.sel.focus.path.0[0] > 0, "{view}: and moved the caret");
+        d.frame(&mut a, vec![key(egui::Key::PageUp)], screen);
+        settle(&mut d, &mut a);
+        assert!((a.canvas.scroll_offset.y - before).abs() < 2.0, "{view}: Page Up scrolled back");
+        assert_eq!(a.session.sel.focus, wordcraft_doc::Pos::body(0, 0), "{view}: with the caret");
+        // Scrolled away from the caret with the wheel, the view comes back to it.
+        for _ in 0..3 {
+            d.frame(&mut a, vec![key(egui::Key::PageDown)], screen);
+            settle(&mut d, &mut a);
+        }
+        a.canvas.scroll_request = Some(egui::Vec2::ZERO);
+        settle(&mut d, &mut a);
+        assert!(a.canvas.scroll_offset.y < 1.0);
+        d.frame(&mut a, vec![key(egui::Key::PageDown)], screen);
+        settle(&mut d, &mut a);
+        assert!(a.canvas.scroll_offset.y > 2.5 * window, "{view}: back at the caret: {}", a.canvas.scroll_offset.y);
+    }
+}
+
 /// Reading Mode: reflowed viewport-height columns, horizontal wheel/navigation, exit restores
 /// Print Layout without editing or changing the document's page setup.
 #[test]

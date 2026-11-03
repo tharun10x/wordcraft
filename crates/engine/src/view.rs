@@ -61,6 +61,10 @@ pub struct ViewState {
     pub read_width: f32,
     #[serde(skip, default = "default_read_height")]
     pub read_height: f32,
+    /// How much of the document the window shows, in points, which the UI keeps up to date: what
+    /// Page Up/Down move by in the continuous views (#5290). Read through [`ViewState::page_step`].
+    #[serde(skip, default = "default_page_step")]
+    pub page_step: f32,
     /// Reader-only layout controls; they are neither document formatting nor saved UI prefs.
     /// `None` chooses responsive column width and keeps the document's line spacing.
     #[serde(skip)]
@@ -157,8 +161,24 @@ fn default_read_height() -> f32 {
     500.0
 }
 
+fn default_page_step() -> f32 {
+    500.0
+}
+
 fn default_read_zoom() -> f32 {
     1.0
+}
+
+impl ViewState {
+    /// Web Layout, Draft and Outline lay the body out as one long sheet, without pages.
+    pub fn is_continuous(&self) -> bool {
+        !self.read_mode && matches!(self.mode, ViewMode::Web | ViewMode::Draft | ViewMode::Outline)
+    }
+
+    /// What Page Up/Down move by in a continuous view, in points: always a usable distance.
+    pub fn page_step(&self) -> f32 {
+        if self.page_step.is_finite() { self.page_step.clamp(144.0, 20_000.0) } else { default_page_step() }
+    }
 }
 
 impl Default for ViewState {
@@ -189,6 +209,7 @@ impl Default for ViewState {
             web_width: default_web_width(),
             read_width: default_read_width(),
             read_height: default_read_height(),
+            page_step: default_page_step(),
             read_column_width: None,
             read_zoom: default_read_zoom(),
             read_line_spacing: None,

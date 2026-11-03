@@ -198,6 +198,9 @@ pub struct CanvasState {
     /// Explicit scroll position to apply on the next frame (reading navigation buttons/keys, a
     /// window moving into another viewport).
     pub(crate) scroll_request: Option<egui::Vec2>,
+    /// Page Up (-1) or Page Down (1) just ran in a continuous view: the view moves as far as the
+    /// caret did, so the caret keeps its place in the window (#5290).
+    pub(crate) page_move: Option<f32>,
     /// The viewport (the content's visible rect on screen) at the end of last frame; the
     /// drag-select edge auto-scroll decides this frame's scroll from it (#688).
     pub(crate) viewport: Option<egui::Rect>,
@@ -406,6 +409,7 @@ impl Default for CanvasState {
             scroll_offset: egui::Vec2::ZERO,
             scroll_max: egui::Vec2::ZERO,
             scroll_request: None,
+            page_move: None,
             viewport: None,
             cols: 1,
             balloon: None,
@@ -538,6 +542,9 @@ fn prepare_view(app: &mut WordApp, ui: &Ui, full: Rect, layout: &DocLayout) -> C
         ui.ctx().request_repaint();
     }
     app.canvas.scale = geo.scale;
+    if let Some(vp) = app.canvas.viewport {
+        app.session.view.page_step = vp.height() / geo.scale;
+    }
     sync_fit_zoom(app, geo.scale);
     let anchored = if let Some((p, (page, x, y))) = zoom_anchor
         && let (Some(pr), Some(lp), Some(vp)) = (geo.rects.get(page), layout.pages.get(page), app.canvas.viewport)
@@ -599,7 +606,17 @@ fn update_caret_scroll(app: &mut WordApp, view: &CanvasView) -> Option<Rect> {
             vec2((c.width * view.geo.scale).max(2.0), c.height * view.geo.scale),
         );
         target = Some(r.expand2(vec2(40.0, 60.0)));
+        if let Some(dir) = app.canvas.page_move {
+            let offset = app.canvas.scroll_offset;
+            let y = (offset.y + dir * app.session.view.page_step() * view.geo.scale).clamp(0.0, app.canvas.scroll_max.y);
+            // Only while that shows the caret: it may be somewhere else after a wheel scroll.
+            if Rect::from_min_size(pos2(offset.x, y), view.area.size()).contains_rect(r) {
+                app.canvas.scroll_request = Some(vec2(offset.x, y));
+                target = None;
+            }
+        }
     }
+    app.canvas.page_move = None;
     app.canvas.scroll_to_caret = false;
     target
 }

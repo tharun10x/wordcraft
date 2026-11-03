@@ -2,6 +2,8 @@
 
 use serde_json::Value;
 use wordcraft_doc::{Pos, StoryRef};
+use wordcraft_layout::DocLayout;
+use wordcraft_layout::hit::Caret;
 
 use super::{parse_pos, sel_result};
 use crate::{CmdError, CmdResult, CommandSpec, Selection, Session, p};
@@ -221,10 +223,7 @@ fn vert(s: &mut Session, v: &Value, dir: i32) -> CmdResult {
             s.goal_x = Some(gx);
             p
         }
-        None => {
-            // Top/bottom of the story: go to its start/end.
-            if dir < 0 { s.doc.start_of(from.story) } else { s.doc.end_of(from.story) }
-        }
+        None => story_edge(s, &from, dir),
     };
     if let Some(c) = l.caret_on(&to, s.page_hint) {
         s.page_hint = c.page;
@@ -233,6 +232,11 @@ fn vert(s: &mut Session, v: &Value, dir: i32) -> CmdResult {
     apply(s, to, ext);
     s.goal_x = gx;
     sel_result(s)
+}
+
+/// Top/bottom of the story: its start/end.
+fn story_edge(s: &Session, from: &Pos, dir: i32) -> Pos {
+    if dir < 0 { s.doc.start_of(from.story) } else { s.doc.end_of(from.story) }
 }
 
 fn line(s: &mut Session, v: &Value, home: bool) -> CmdResult {
@@ -259,11 +263,30 @@ fn page(s: &mut Session, v: &Value, dir: i32) -> CmdResult {
     let l = s.layout();
     let from = s.sel.focus.clone();
     let Some(c) = l.caret_on(&from, s.page_hint) else { return sel_result(s) };
+    if s.view.is_continuous() {
+        let gx = s.goal_x.unwrap_or(c.x);
+        let to = screen_target(s, &l, &from, (&c, gx), dir);
+        apply(s, to, ext);
+        s.goal_x = Some(gx);
+        return sel_result(s);
+    }
     let np = if dir < 0 { c.page.saturating_sub(1) } else { (c.page + 1).min(l.pages.len().saturating_sub(1)) };
     let to = l.hit(np, c.x, c.top + 1.0, from.story).unwrap_or(from);
     s.page_hint = np;
     apply(s, to, ext);
     sel_result(s)
+}
+
+/// Where Page Up/Down go in a view with no pages: one window's height away, keeping the column
+/// `gx` (#5290). A line taller than that step, or the sheet's edge, would leave the caret where
+/// it is, so then it moves one line, or to the story's start or end.
+fn screen_target(s: &Session, l: &DocLayout, from: &Pos, (c, gx): (&Caret, f32), dir: i32) -> Pos {
+    let y = c.top + dir as f32 * s.view.page_step() + 1.0;
+    let onward = |to: &Pos| l.caret_on(to, c.page).is_some_and(|t| if dir < 0 { t.top < c.top } else { t.top > c.top });
+    l.hit(c.page, gx, y, from.story)
+        .filter(onward)
+        .or_else(|| l.vertical(from, Some(gx), dir, c.page).map(|(p, _)| p))
+        .unwrap_or_else(|| story_edge(s, from, dir))
 }
 
 fn set(s: &mut Session, v: &Value) -> CmdResult {
